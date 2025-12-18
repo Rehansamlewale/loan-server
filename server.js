@@ -30,6 +30,37 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 console.log(`🌍 Environment: ${NODE_ENV}`);
 console.log(`🚀 Port: ${PORT}`);
 
+// Memory monitoring
+const logMemoryUsage = () => {
+    const used = process.memoryUsage();
+    const memoryInfo = {
+        rss: Math.round(used.rss / 1024 / 1024 * 100) / 100,
+        heapTotal: Math.round(used.heapTotal / 1024 / 1024 * 100) / 100,
+        heapUsed: Math.round(used.heapUsed / 1024 / 1024 * 100) / 100,
+        external: Math.round(used.external / 1024 / 1024 * 100) / 100
+    };
+    console.log(`💾 Memory Usage: RSS: ${memoryInfo.rss}MB, Heap: ${memoryInfo.heapUsed}/${memoryInfo.heapTotal}MB, External: ${memoryInfo.external}MB`);
+    
+    // Warning if memory usage is high (approaching 512MB limit)
+    if (memoryInfo.rss > 400) {
+        console.log(`⚠️ HIGH MEMORY WARNING: ${memoryInfo.rss}MB RSS (limit: 512MB)`);
+        
+        // Force garbage collection if available
+        if (global.gc) {
+            console.log('🗑️ Running garbage collection...');
+            global.gc();
+        }
+    }
+    
+    return memoryInfo;
+};
+
+// Log memory usage every 5 minutes
+setInterval(logMemoryUsage, 5 * 60 * 1000);
+
+// Initial memory log
+logMemoryUsage();
+
 // Middleware - More permissive CORS for development
 const corsOptions = {
     origin: function (origin, callback) {
@@ -109,10 +140,26 @@ const initializeWhatsApp = () => {
                 '--disable-renderer-backgrounding',
                 '--disable-ipc-flooding-protection',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-features=VizDisplayCompositor',
-                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                // Memory optimization for Render free tier
+                '--memory-pressure-off',
+                '--max_old_space_size=400',
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-client-side-phishing-detection',
+                '--disable-default-apps',
+                '--disable-hang-monitor',
+                '--disable-popup-blocking',
+                '--disable-prompt-on-repost',
+                '--disable-sync',
+                '--disable-translate',
+                '--metrics-recording-only',
+                '--no-default-browser-check',
+                '--no-first-run',
+                '--safebrowsing-disable-auto-update',
+                '--disable-features=TranslateUI,BlinkGenPropertyTrees'
             ],
-            timeout: 180000,
+            timeout: 120000,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         },
         webVersionCache: {
@@ -196,16 +243,33 @@ const initializeWhatsApp = () => {
 
     client.on('disconnected', (reason) => {
         console.log('🔌 WhatsApp Client disconnected:', reason);
-        console.log('🔄 Attempting to reconnect...');
+        console.log('�  Memory usage at disconnect:', logMemoryUsage());
         isReady = false;
+        qrCodeData = null;
         
-        // Auto-reconnect after 5 seconds
-        setTimeout(() => {
-            if (!isReady) {
-                console.log('🔄 Reinitializing WhatsApp Client...');
-                initializeWhatsApp();
-            }
-        }, 5000);
+        // Check if disconnection was due to memory issues
+        const memUsage = process.memoryUsage();
+        const rssInMB = memUsage.rss / 1024 / 1024;
+        
+        if (rssInMB > 450) {
+            console.log('⚠️ Disconnection likely due to high memory usage. Waiting longer before reconnect...');
+            setTimeout(() => {
+                if (!isReady) {
+                    console.log('🔄 Reinitializing WhatsApp Client after memory cleanup...');
+                    // Force garbage collection before restart
+                    if (global.gc) global.gc();
+                    initializeWhatsApp();
+                }
+            }, 15000); // Wait 15 seconds for memory cleanup
+        } else {
+            // Normal reconnect
+            setTimeout(() => {
+                if (!isReady) {
+                    console.log('🔄 Reinitializing WhatsApp Client...');
+                    initializeWhatsApp();
+                }
+            }, 5000);
+        }
     });
 
     client.on('loading_screen', (percent, message) => {
@@ -356,11 +420,15 @@ app.get('/api/whatsapp/status', (req, res) => {
 
 // Health check endpoint for Render
 app.get('/health', (req, res) => {
+    const memoryInfo = logMemoryUsage();
+    
     res.status(200).json({
         status: 'healthy',
         whatsapp: isReady ? 'connected' : 'disconnected',
         timestamp: new Date().toISOString(),
-        uptime: process.uptime()
+        uptime: process.uptime(),
+        memory: memoryInfo,
+        memoryWarning: memoryInfo.rss > 400 ? 'HIGH_MEMORY_USAGE' : null
     });
 });
 
@@ -399,6 +467,104 @@ app.get('/api/whatsapp/qr-code', (req, res) => {
     }
 });
 
+// Validate phone number endpoint
+app.post('/api/whatsapp/validate-phone', async (req, res) => {
+    try {
+        if (!isReady) {
+            return res.status(400).json({
+                success: false,
+                error: 'WhatsApp client not ready'
+            });
+        }
+
+        const { phone } = req.body;
+        
+        if (!phone) {
+            return res.status(400).json({
+                success: false,
+                error: 'Phone number is required'
+            });
+        }
+
+        // Clean phone number
+        const cleanPhone = phone.toString().replace(/[^\d]/g, '');
+        const formattedPhone = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+        
+        console.log(`🔍 Validating phone: ${formattedPhone}`);
+        
+        // Check if number is registered on WhatsApp
+        const isRegistered = await client.isRegisteredUser(formattedPhone);
+        
+        let contactInfo = null;
+        if (isRegistered) {
+            try {
+                const contact = await client.getContactById(formattedPhone);
+                contactInfo = {
+                    name: contact.name || contact.pushname || 'Unknown',
+                    isMyContact: contact.isMyContact,
+                    profilePicUrl: contact.profilePicUrl || null
+                };
+            } catch (contactError) {
+                console.log('Could not get contact info:', contactError.message);
+            }
+        }
+        
+        res.json({
+            success: true,
+            phone: cleanPhone,
+            formattedPhone: formattedPhone,
+            isRegistered: isRegistered,
+            contactInfo: contactInfo,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('❌ Phone validation failed:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Test message endpoint (for debugging)
+app.post('/api/whatsapp/test-message', async (req, res) => {
+    try {
+        if (!isReady) {
+            return res.status(400).json({
+                success: false,
+                error: 'WhatsApp client not ready'
+            });
+        }
+
+        // Send a test message to yourself (the connected WhatsApp number)
+        const testMessage = `🧪 Test message from WhatsApp API\nTime: ${new Date().toLocaleString()}\nServer: Render\nStatus: Connected ✅`;
+        
+        // Get the current user's WhatsApp ID
+        const currentUser = client.info.wid._serialized;
+        console.log(`🧪 Sending test message to current user: ${currentUser}`);
+        
+        const sentMessage = await client.sendMessage(currentUser, testMessage);
+        
+        res.json({
+            success: true,
+            messageId: sentMessage.id.id,
+            recipient: currentUser,
+            timestamp: new Date().toISOString(),
+            message: 'Test message sent to your own WhatsApp'
+        });
+
+    } catch (error) {
+        console.error('❌ Test message failed:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
 // Reset WhatsApp session (for troubleshooting)
 app.post('/api/whatsapp/reset-session', async (req, res) => {
     try {
@@ -433,10 +599,30 @@ app.post('/api/whatsapp/reset-session', async (req, res) => {
 // Send single message
 app.post('/api/whatsapp/send-message', async (req, res) => {
     try {
-        if (!isReady) {
+        if (!isReady || !client) {
             return res.status(400).json({
                 success: false,
-                error: 'WhatsApp client not ready'
+                error: 'WhatsApp client not ready or disconnected'
+            });
+        }
+
+        // Check if client is still connected
+        try {
+            const state = await client.getState();
+            if (state !== 'CONNECTED') {
+                console.log(`⚠️ Client state is ${state}, not CONNECTED`);
+                isReady = false;
+                return res.status(400).json({
+                    success: false,
+                    error: `WhatsApp client state is ${state}. Please wait for reconnection.`
+                });
+            }
+        } catch (stateError) {
+            console.error('❌ Error checking client state:', stateError.message);
+            isReady = false;
+            return res.status(400).json({
+                success: false,
+                error: 'WhatsApp client connection lost. Please wait for reconnection.'
             });
         }
 
@@ -449,23 +635,79 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
             });
         }
 
-        // Format phone number for WhatsApp
-        const formattedPhone = phone.includes('@c.us') ? phone : `${phone}@c.us`;
+        // Clean and validate phone number
+        const cleanPhone = phone.toString().replace(/[^\d]/g, '');
+        if (cleanPhone.length < 10) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid phone number format'
+            });
+        }
 
-        // Send message
-        const sentMessage = await client.sendMessage(formattedPhone, message);
+        // Format phone number for WhatsApp
+        const formattedPhone = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+
+        console.log(`📤 Attempting to send message to: ${formattedPhone}`);
+        console.log(`📝 Message preview: ${message.substring(0, 50)}...`);
+
+        // Check if contact exists first
+        try {
+            const contact = await client.getContactById(formattedPhone);
+            console.log(`👤 Contact found: ${contact.name || contact.pushname || 'Unknown'}`);
+        } catch (contactError) {
+            console.log(`⚠️ Contact not found, but will try to send anyway: ${contactError.message}`);
+        }
+
+        // Send message with retry logic
+        let sentMessage;
+        let attempts = 0;
+        const maxAttempts = 3;
+
+        while (attempts < maxAttempts) {
+            try {
+                attempts++;
+                console.log(`📤 Send attempt ${attempts}/${maxAttempts} to ${formattedPhone}`);
+                
+                sentMessage = await client.sendMessage(formattedPhone, message);
+                console.log(`✅ Message sent successfully on attempt ${attempts}`);
+                break;
+            } catch (sendError) {
+                console.error(`❌ Send attempt ${attempts} failed:`, sendError.message);
+                
+                if (attempts === maxAttempts) {
+                    throw sendError;
+                }
+                
+                // Wait before retry
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
 
         res.json({
             success: true,
             messageId: sentMessage.id.id,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            attempts: attempts
         });
 
     } catch (error) {
-        console.error('Error sending message:', error);
+        console.error('❌ Error sending message:', error);
+        
+        // Provide more specific error messages
+        let errorMessage = error.message;
+        if (error.message.includes('Evaluation failed')) {
+            errorMessage = 'WhatsApp Web interface error. Please try again or restart the session.';
+        } else if (error.message.includes('Phone number is not a valid')) {
+            errorMessage = 'Invalid phone number. Please check the number format.';
+        } else if (error.message.includes('Chat not found')) {
+            errorMessage = 'Contact not found on WhatsApp. Please verify the phone number.';
+        }
+        
         res.status(500).json({
             success: false,
-            error: error.message
+            error: errorMessage,
+            originalError: error.message,
+            timestamp: new Date().toISOString()
         });
     }
 });
@@ -491,26 +733,72 @@ app.post('/api/whatsapp/send-bulk', async (req, res) => {
 
         const results = [];
 
-        for (const contact of contacts) {
+        for (let i = 0; i < contacts.length; i++) {
+            const contact = contacts[i];
+            console.log(`📤 Bulk send ${i + 1}/${contacts.length}: ${contact.name} (${contact.phone})`);
+            
             try {
-                const formattedPhone = contact.phone.includes('@c.us') ? contact.phone : `${contact.phone}@c.us`;
+                // Clean and validate phone number
+                const cleanPhone = contact.phone.toString().replace(/[^\d]/g, '');
+                if (cleanPhone.length < 10) {
+                    throw new Error('Invalid phone number format');
+                }
+
+                const formattedPhone = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
                 
-                const sentMessage = await client.sendMessage(formattedPhone, message);
+                // Send with retry logic
+                let sentMessage;
+                let attempts = 0;
+                const maxAttempts = 2; // Fewer attempts for bulk to avoid delays
+
+                while (attempts < maxAttempts) {
+                    try {
+                        attempts++;
+                        sentMessage = await client.sendMessage(formattedPhone, message);
+                        console.log(`✅ Bulk message sent to ${contact.name} on attempt ${attempts}`);
+                        break;
+                    } catch (sendError) {
+                        console.error(`❌ Bulk send attempt ${attempts} failed for ${contact.name}:`, sendError.message);
+                        
+                        if (attempts === maxAttempts) {
+                            throw sendError;
+                        }
+                        
+                        // Short wait before retry
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
                 
                 results.push({
                     contact: contact,
                     success: true,
-                    messageId: sentMessage.id.id
+                    messageId: sentMessage.id.id,
+                    attempts: attempts
                 });
 
                 // Add delay between messages to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (i < contacts.length - 1) {
+                    console.log(`⏳ Waiting 3 seconds before next message...`);
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
 
             } catch (error) {
+                console.error(`❌ Failed to send to ${contact.name}:`, error.message);
+                
+                let errorMessage = error.message;
+                if (error.message.includes('Evaluation failed')) {
+                    errorMessage = 'WhatsApp Web interface error';
+                } else if (error.message.includes('Phone number is not a valid')) {
+                    errorMessage = 'Invalid phone number format';
+                } else if (error.message.includes('Chat not found')) {
+                    errorMessage = 'Contact not found on WhatsApp';
+                }
+                
                 results.push({
                     contact: contact,
                     success: false,
-                    error: error.message
+                    error: errorMessage,
+                    originalError: error.message
                 });
             }
         }
