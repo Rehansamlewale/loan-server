@@ -24,6 +24,11 @@ const qrcode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Log environment info
+console.log(`🌍 Environment: ${NODE_ENV}`);
+console.log(`🚀 Port: ${PORT}`);
 
 // Middleware
 app.use(cors({
@@ -290,6 +295,16 @@ app.get('/api/whatsapp/status', (req, res) => {
     });
 });
 
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'healthy',
+        whatsapp: isReady ? 'connected' : 'disconnected',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
 // Simple status page
 app.get('/', (req, res) => {
     res.send(`
@@ -298,12 +313,14 @@ app.get('/', (req, res) => {
             <body style="font-family: Arial; padding: 20px;">
                 <h1>📱 WhatsApp API Server</h1>
                 <p><strong>Status:</strong> ${isReady ? '✅ Connected' : '⏳ Waiting for authentication'}</p>
-                <p><strong>Port:</strong> 3001</p>
+                <p><strong>Port:</strong> ${PORT}</p>
+                <p><strong>Environment:</strong> ${process.env.NODE_ENV || 'development'}</p>
                 <hr>
                 <h3>Available Endpoints:</h3>
                 <ul>
                     <li><a href="/qr">📱 QR Code for Authentication</a></li>
                     <li><a href="/api/whatsapp/status">📊 API Status (JSON)</a></li>
+                    <li><a href="/health">🏥 Health Check</a></li>
                 </ul>
                 <hr>
                 <p><em>Server running since: ${new Date().toLocaleString()}</em></p>
