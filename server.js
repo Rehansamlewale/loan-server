@@ -30,18 +30,49 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 console.log(`🌍 Environment: ${NODE_ENV}`);
 console.log(`🚀 Port: ${PORT}`);
 
-// Middleware
-app.use(cors({
-    origin: [
-        'https://yashasavibhava.com',
-        'http://localhost:3000',
-        'http://localhost:3001'
-    ],
+// Middleware - More permissive CORS for development
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        const allowedOrigins = [
+            'https://yashasavibhava.com',
+            'http://localhost:3000',
+            'http://localhost:3001',
+            'http://127.0.0.1:3000',
+            'https://localhost:3000'
+        ];
+        
+        // Allow any localhost origin for development
+        if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+            return callback(null, true);
+        }
+        
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.log('CORS blocked origin:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+    optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Handle preflight requests
+app.options('*', cors());
+
+// Debug middleware to log requests
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin}`);
+    next();
+});
 
 // WhatsApp Client
 let client;
