@@ -76,32 +76,38 @@ const initializeWhatsApp = () => {
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                '--disable-ipc-flooding-protection'
+                '--disable-ipc-flooding-protection',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=VizDisplayCompositor',
+                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             ],
-            timeout: 120000
+            timeout: 180000,
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         },
         webVersionCache: {
             type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2413.51.html',
         }
     });
 
     client.on('qr', async (qr) => {
         console.log('📱 QR Code received! Generating image...');
+        console.log('🔗 QR String:', qr.substring(0, 50) + '...');
         
         try {
-            // Generate QR code data URL
+            // Generate QR code data URL with higher quality
             qrCodeData = await qrcode.toDataURL(qr, {
-                width: 300,
-                margin: 2,
+                width: 400,
+                margin: 4,
                 color: {
                     dark: '#000000',
                     light: '#FFFFFF'
-                }
+                },
+                errorCorrectionLevel: 'M'
             });
             
             console.log('✅ QR Code ready!');
-            console.log('🌐 Open http://localhost:3001/qr in your browser');
+            console.log('🌐 Open https://loan-server-pfyk.onrender.com/qr in your browser');
             console.log('📱 Or scan the QR code below:');
             
             // Display QR in console
@@ -112,8 +118,17 @@ const initializeWhatsApp = () => {
                 console.log('💡 Install qrcode-terminal for console QR: npm install qrcode-terminal');
             }
             
+            // Set QR expiry timer (QR codes typically expire after 20 seconds)
+            setTimeout(() => {
+                if (qrCodeData && !isReady) {
+                    console.log('⏰ QR Code expired, will generate new one...');
+                    qrCodeData = null;
+                }
+            }, 20000);
+            
         } catch (error) {
             console.error('❌ Error generating QR code:', error);
+            qrCodeData = null;
         }
     });
 
@@ -130,9 +145,22 @@ const initializeWhatsApp = () => {
 
     client.on('auth_failure', (msg) => {
         console.error('❌ Authentication failed:', msg);
-        console.log('💡 Try deleting the whatsapp-session folder and restart');
+        console.log('💡 Clearing session and restarting...');
         isReady = false;
         qrCodeData = null;
+        
+        // Auto-restart after auth failure
+        setTimeout(() => {
+            console.log('🔄 Restarting WhatsApp client after auth failure...');
+            if (client) {
+                client.destroy().then(() => {
+                    initializeWhatsApp();
+                }).catch(err => {
+                    console.error('Error destroying client:', err);
+                    initializeWhatsApp();
+                });
+            }
+        }, 5000);
     });
 
     client.on('disconnected', (reason) => {
@@ -336,7 +364,38 @@ app.get('/api/whatsapp/qr-code', (req, res) => {
     } else if (qrCodeData) {
         res.json({ success: true, qrCode: qrCodeData });
     } else {
-        res.json({ success: false, message: 'QR code not available yet' });
+        res.json({ success: false, message: 'QR code not available yet. Please wait or restart the client.' });
+    }
+});
+
+// Reset WhatsApp session (for troubleshooting)
+app.post('/api/whatsapp/reset-session', async (req, res) => {
+    try {
+        console.log('🔄 Resetting WhatsApp session...');
+        
+        isReady = false;
+        qrCodeData = null;
+        
+        if (client) {
+            await client.destroy();
+        }
+        
+        // Wait a moment before reinitializing
+        setTimeout(() => {
+            initializeWhatsApp();
+        }, 2000);
+        
+        res.json({ 
+            success: true, 
+            message: 'Session reset initiated. New QR code will be generated shortly.' 
+        });
+        
+    } catch (error) {
+        console.error('Error resetting session:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
