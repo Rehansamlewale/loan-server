@@ -26,7 +26,16 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: [
+        'https://yashasavibhava.com',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // WhatsApp Client
@@ -58,14 +67,13 @@ const initializeWhatsApp = () => {
                 '--disable-features=VizDisplayCompositor',
                 '--disable-extensions',
                 '--disable-plugins',
-                '--disable-images',
-                '--disable-javascript',
                 '--disable-default-apps',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding'
+                '--disable-renderer-backgrounding',
+                '--disable-ipc-flooding-protection'
             ],
-            timeout: 60000
+            timeout: 120000
         },
         webVersionCache: {
             type: 'remote',
