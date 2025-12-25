@@ -33,10 +33,11 @@ console.log(`🚀 Port: ${PORT}`);
 // Middleware
 app.use(cors({
     origin: [
-        'http://localhost:3000',      // React app
-        'http://localhost:3001',      // WhatsApp server itself
-        'https://yashasavibhava.com',
-        'https://loan-server-pfyk.onrender.com'
+        'http://localhost:3000',      // React app (local)
+        'http://localhost:3001',      // WhatsApp server itself (local)
+        'https://yashasavibhava.com', // Production domain
+        'https://loan-server-pfyk.onrender.com',  // Render deployment
+        'https://loan-server-pfyk.onrender.com/qr'  // Render QR page
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -59,6 +60,7 @@ app.use(express.json({ limit: '10mb' }));  // Limit payload size
 // WhatsApp Client
 let client;
 let isReady = false;
+let isAuthenticated = false;
 let qrCodeData = null;
 
 // Initialize WhatsApp Client
@@ -119,7 +121,8 @@ const initializeWhatsApp = () => {
             });
 
             console.log('✅ QR Code ready!');
-            console.log('🌐 Open http://localhost:3000 in your browser');
+            console.log('🌐 Local: http://localhost:3001/qr');
+            console.log('🌐 Production: https://loan-server-pfyk.onrender.com/qr');
             console.log('📱 Or scan the QR code below:');
 
             // Display QR in console
@@ -144,12 +147,17 @@ const initializeWhatsApp = () => {
 
     client.on('authenticated', () => {
         console.log('🔐 WhatsApp Client authenticated successfully');
+        console.log('⏳ Waiting for client to be fully ready...');
+        // Track authentication but don't set isReady yet
+        isAuthenticated = true;
+        qrCodeData = null;
     });
 
     client.on('auth_failure', (msg) => {
         console.error('❌ Authentication failed:', msg);
         console.log('💡 Try deleting the whatsapp-session folder and restart');
         isReady = false;
+        isAuthenticated = false;
         qrCodeData = null;
     });
 
@@ -157,6 +165,7 @@ const initializeWhatsApp = () => {
         console.log('🔌 WhatsApp Client disconnected:', reason);
         console.log('🔄 Attempting to reconnect...');
         isReady = false;
+        isAuthenticated = false;
 
         // Auto-reconnect after 5 seconds
         setTimeout(() => {
@@ -301,7 +310,9 @@ app.get('/qr', (req, res) => {
 // Check connection status
 app.get('/api/whatsapp/status', (req, res) => {
     res.json({
-        connected: isReady,
+        connected: isAuthenticated || isReady,  // Show as connected if authenticated
+        ready: isReady,  // Only true when fully ready to send messages
+        authenticated: isAuthenticated,
         hasQR: !!qrCodeData,
         timestamp: new Date().toISOString()
     });
