@@ -62,126 +62,156 @@ let client;
 let isReady = false;
 let isAuthenticated = false;
 let qrCodeData = null;
+let initAttempts = 0;
+const MAX_INIT_ATTEMPTS = 3;  // Prevent infinite restart loops
 
 // Initialize WhatsApp Client
 const initializeWhatsApp = () => {
-    console.log('🔄 Initializing WhatsApp Client...');
+    if (initAttempts >= MAX_INIT_ATTEMPTS) {
+        console.error('❌ Max initialization attempts reached. Server will not auto-restart.');
+        console.log('💡 This usually means insufficient resources. Consider upgrading Render tier.');
+        return;
+    }
 
-    client = new Client({
-        authStrategy: new LocalAuth({
-            clientId: "vardhaman-finance",
-            dataPath: "./whatsapp-session"
-        }),
-        puppeteer: {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu',
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
-                '--disable-extensions',
-                '--disable-plugins',
-                '--disable-default-apps',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-ipc-flooding-protection',
-                // Production optimizations
-                '--disable-software-rasterizer',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-                '--js-flags=--max-old-space-size=512'  // Limit memory for free tier
-            ],
-            timeout: NODE_ENV === 'production' ? 60000 : 120000  // Faster timeout in production
-        },
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-        }
-    });
+    initAttempts++;
+    console.log(`🔄 Initializing WhatsApp Client (Attempt ${initAttempts}/${MAX_INIT_ATTEMPTS})...`);
 
-    client.on('qr', async (qr) => {
-        console.log('📱 QR Code received! Generating image...');
+    try {
 
-        try {
-            // Generate QR code data URL
-            qrCodeData = await qrcode.toDataURL(qr, {
-                width: 300,
-                margin: 2,
-                color: {
-                    dark: '#000000',
-                    light: '#FFFFFF'
-                }
-            });
+        client = new Client({
+            authStrategy: new LocalAuth({
+                clientId: "vardhaman-finance",
+                dataPath: "./whatsapp-session"
+            }),
+            puppeteer: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor',
+                    '--disable-extensions',
+                    '--disable-plugins',
+                    '--disable-default-apps',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-ipc-flooding-protection',
+                    // Production optimizations
+                    '--disable-software-rasterizer',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                    '--js-flags=--max-old-space-size=256'  // Very low memory for free tier
+                ],
+                timeout: NODE_ENV === 'production' ? 90000 : 120000  // 90s timeout in production
+            },
+            webVersionCache: {
+                type: 'remote',
+                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+            }
+        });
 
-            console.log('✅ QR Code ready!');
-            console.log('🌐 Local: http://localhost:3001/qr');
-            console.log('🌐 Production: https://loan-server-pfyk.onrender.com/qr');
-            console.log('📱 Or scan the QR code below:');
+        // Prevent crashes from unhandled errors
+        client.on('error', (error) => {
+            console.error('❌ WhatsApp Client error:', error.message);
+            // Don't crash the server, just log the error
+        });
 
-            // Display QR in console
+        client.on('qr', async (qr) => {
+            console.log('📱 QR Code received! Generating image...');
+
             try {
-                const qrTerminal = require('qrcode-terminal');
-                qrTerminal.generate(qr, { small: true });
-            } catch (e) {
-                console.log('💡 Install qrcode-terminal for console QR: npm install qrcode-terminal');
+                // Generate QR code data URL
+                qrCodeData = await qrcode.toDataURL(qr, {
+                    width: 300,
+                    margin: 2,
+                    color: {
+                        dark: '#000000',
+                        light: '#FFFFFF'
+                    }
+                });
+
+                console.log('✅ QR Code ready!');
+                console.log('🌐 Local: http://localhost:3001/qr');
+                console.log('🌐 Production: https://loan-server-pfyk.onrender.com/qr');
+                console.log('📱 Or scan the QR code below:');
+
+                // Display QR in console
+                try {
+                    const qrTerminal = require('qrcode-terminal');
+                    qrTerminal.generate(qr, { small: true });
+                } catch (e) {
+                    console.log('💡 Install qrcode-terminal for console QR: npm install qrcode-terminal');
+                }
+
+            } catch (error) {
+                console.error('❌ Error generating QR code:', error);
+            }
+        });
+
+        client.on('ready', () => {
+            console.log('🎉 WhatsApp Client is ready!');
+            console.log('✅ You can now send messages via API');
+            isReady = true;
+            qrCodeData = null;
+        });
+
+        client.on('authenticated', () => {
+            console.log('🔐 WhatsApp Client authenticated successfully');
+            console.log('⏳ Waiting for client to be fully ready...');
+            // Track authentication but don't set isReady yet
+            isAuthenticated = true;
+            qrCodeData = null;
+        });
+
+        client.on('auth_failure', (msg) => {
+            console.error('❌ Authentication failed:', msg);
+            console.log('💡 Try deleting the whatsapp-session folder and restart');
+            isReady = false;
+            isAuthenticated = false;
+            qrCodeData = null;
+        });
+
+        client.on('disconnected', (reason) => {
+            console.log('🔌 WhatsApp Client disconnected:', reason);
+            isReady = false;
+            isAuthenticated = false;
+
+            // Don't auto-reconnect if user logged out
+            if (reason === 'LOGOUT') {
+                console.log('⚠️ WhatsApp logged out. Session cleared.');
+                console.log('💡 Please restart the server to generate a new QR code.');
+                qrCodeData = null;
+                return;
             }
 
-        } catch (error) {
-            console.error('❌ Error generating QR code:', error);
-        }
-    });
+            // Auto-reconnect for other disconnection reasons
+            console.log('🔄 Attempting to reconnect...');
+            setTimeout(() => {
+                if (!isReady) {
+                    console.log('🔄 Reinitializing WhatsApp Client...');
+                    initializeWhatsApp();
+                }
+            }, 5000);
+        });
 
-    client.on('ready', () => {
-        console.log('🎉 WhatsApp Client is ready!');
-        console.log('✅ You can now send messages via API');
-        isReady = true;
-        qrCodeData = null;
-    });
+        client.on('loading_screen', (percent, message) => {
+            console.log('⏳ Loading WhatsApp:', percent + '%', message);
+        });
 
-    client.on('authenticated', () => {
-        console.log('🔐 WhatsApp Client authenticated successfully');
-        console.log('⏳ Waiting for client to be fully ready...');
-        // Track authentication but don't set isReady yet
-        isAuthenticated = true;
-        qrCodeData = null;
-    });
-
-    client.on('auth_failure', (msg) => {
-        console.error('❌ Authentication failed:', msg);
-        console.log('💡 Try deleting the whatsapp-session folder and restart');
+        console.log('🚀 Starting WhatsApp Client initialization...');
+        client.initialize();
+    } catch (error) {
+        console.error('❌ Error initializing WhatsApp client:', error.message);
         isReady = false;
         isAuthenticated = false;
-        qrCodeData = null;
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log('🔌 WhatsApp Client disconnected:', reason);
-        console.log('🔄 Attempting to reconnect...');
-        isReady = false;
-        isAuthenticated = false;
-
-        // Auto-reconnect after 5 seconds
-        setTimeout(() => {
-            if (!isReady) {
-                console.log('🔄 Reinitializing WhatsApp Client...');
-                initializeWhatsApp();
-            }
-        }, 5000);
-    });
-
-    client.on('loading_screen', (percent, message) => {
-        console.log('⏳ Loading WhatsApp:', percent + '%', message);
-    });
-
-    console.log('🚀 Starting WhatsApp Client initialization...');
-    client.initialize();
+    }
 };
 
 // Routes
@@ -363,6 +393,39 @@ app.get('/api/whatsapp/qr-code', (req, res) => {
     }
 });
 
+// Logout endpoint
+app.post('/api/whatsapp/logout', async (req, res) => {
+    try {
+        if (!client) {
+            return res.status(400).json({
+                success: false,
+                message: 'WhatsApp client not initialized'
+            });
+        }
+
+        console.log('🚪 Logout requested...');
+        await client.logout();
+
+        // Reset states
+        isReady = false;
+        isAuthenticated = false;
+        qrCodeData = null;
+
+        console.log('✅ Logged out successfully');
+        res.json({
+            success: true,
+            message: 'Logged out successfully. Please restart the server to reconnect.'
+        });
+    } catch (error) {
+        console.error('❌ Logout error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Logout failed',
+            error: error.message
+        });
+    }
+});
+
 // Send single message
 app.post('/api/whatsapp/send-message', async (req, res) => {
     try {
@@ -382,11 +445,44 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
             });
         }
 
+        // Check if client is ready and connected
+        if (!isReady) {
+            return res.status(503).json({
+                success: false,
+                error: 'WhatsApp client is not ready. Please scan QR code first.'
+            });
+        }
+
+        // Validate client state before sending
+        try {
+            const state = await client.getState();
+            if (state !== 'CONNECTED') {
+                console.log('⚠️ Client state:', state);
+                return res.status(503).json({
+                    success: false,
+                    error: `WhatsApp is not connected. Current state: ${state}. Please reconnect.`
+                });
+            }
+        } catch (stateError) {
+            console.error('Error checking client state:', stateError);
+            return res.status(503).json({
+                success: false,
+                error: 'WhatsApp session is not available. Please reconnect.'
+            });
+        }
+
         // Format phone number for WhatsApp
         const formattedPhone = phone.includes('@c.us') ? phone : `${phone}@c.us`;
 
-        // Send message
-        const sentMessage = await client.sendMessage(formattedPhone, message);
+        // Send message with timeout
+        const sendTimeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Message send timeout after 30 seconds')), 30000)
+        );
+
+        const sentMessage = await Promise.race([
+            client.sendMessage(formattedPhone, message),
+            sendTimeout
+        ]);
 
         res.json({
             success: true,
@@ -396,9 +492,19 @@ app.post('/api/whatsapp/send-message', async (req, res) => {
 
     } catch (error) {
         console.error('Error sending message:', error);
+
+        // Provide more specific error messages
+        let errorMessage = error.message;
+        if (error.message.includes('Session closed') || error.message.includes('Protocol error')) {
+            errorMessage = 'WhatsApp session has been closed. Please reconnect by scanning the QR code again.';
+            isReady = false; // Reset ready state
+        } else if (error.message.includes('timeout')) {
+            errorMessage = 'Message sending timed out. Please try again.';
+        }
+
         res.status(500).json({
             success: false,
-            error: error.message
+            error: errorMessage
         });
     }
 });
